@@ -35,7 +35,7 @@ Due to these complications, in the worst case we may need to fall back to social
 
 ## Problem statement
 
-- the failure detector maintains a set *pool* of tuples *(fn,hd,OK,proof)* consisting of a full node and of a header provided by this full node, and a boolean OK that indicates that the lite client algorithm established trust for this header.
+- the failure detector maintains a set *pool* of tuples *(fn,hd,OK,proof)* consisting of a full node *fn*, a header *hd* provided by this full node, a boolean *OK* that indicates that the lite client algorithm established trust for this header, and the proof **to be done** returned by the lite client.
 
 - We assume that the failure detector is initialized with a trusted header whose age is within the trusting period. That is, initially *pool = {(self,inithead,true,[])}*
 
@@ -43,7 +43,28 @@ Due to these complications, in the worst case we may need to fall back to social
 
 **this means that this evidence must be returned, e.g., by bisection. Bisection must always return the list of headers from inithead to newheader that was used to establish trust (or distrust) in newheader based on inithead**
 
-- 
+- the failure detector requests headers from different full nodes (for heights it has already headers for in the pool), and checks them agains headers in the pool.
+
+- In case there are two conflicting header for the same height, that is, there is a tuple *t = (_, th, true, _)* in the pool and a newly downloaded header *h* that are different but *th.height = h.height)*, then *t* and *h* shall be added to a set *evidence*.
+
+** The goal is to find a (probabilistic) protocol that uses the lite client and probes full nodes directly in a way that ensures probabilistic guarantees of finding evidence in case it exists.
+
+Questions
+
+- Q1: if a full nodes never replies to requests can it be punished. Should each full node be required to at least serve a request every *x* minutes? Otherwise it is hard to motivate full nodes to respond, and thus to ensure any liveness guarantees.
+
+- Q2: what is the most suitable way of modeling the system for probabilistic guarantees? Possible options from the literature:
+
+  - Strong adversaries (that have a strategy in picking message delays to play against you, in combination with local coin tosses at the level of the failure detector)
+
+  - Randomized schedulers: Roughly, a scheduler randomly decides which process does the next step and which messages are delivered to this process in this step.
+
+-Q3: Are we limiting ourselves to the scenario of too many faults to ensure consensus agreement but not complete takeover, that is, 1/3 n <= f <= 2/3 n?
+
+
+
+
+
 
 ## Definitions
 
