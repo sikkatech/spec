@@ -1,4 +1,4 @@
-*** This is the beginning of an unfinished draft. Don't continue reading! ***
+***This is the beginning of an unfinished draft. Don't continue reading!***
 
 # Failure detector
 
