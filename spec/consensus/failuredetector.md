@@ -42,6 +42,9 @@ different from *h*, we have a fork. There are several cases to distinguish
         - **C2F.** *h'* can be verified: there is a fork on the main blockchain
         - **C2L.** otherwise: ? << is this lunatic >>
 
+**Q5: Which cases should we distinguish in C2L? e.g.:
+(1) timeout, (2) trusting period expired (do we consider it a fork if the signatures are fine, but the trusting period expired?)**  
+
 **Q2: Is C1 the only case where we can mark a secondary faulty?**
 
 **Q3: Should the failure detector analyze the headers, e.g., look for double signing? Or should it just report both headers.**
@@ -72,69 +75,40 @@ given that the 1/3 assumption is necessarily violated to violate agreement, ther
 Due to these complications, in the worst case we may need to fall back to social consensus. Also for this, the evidence of the fault detector will be crucial to figure out who misbehaved/what went wrong. In this sense, this specification can be studied independently of the actual fork accountability and punishment scheme.
 
 
-## Problem statement
-
-From the ADR.
-The detection module is for checking if any of the backup nodes are reporting conflicting information. It requests headers from each backup node and compares them with a verified header from the primary. If there is a conflict, it attempts to verify the conflicting header via the verifier. If it can be verified, it indicates an attack on the light clients that should be punishable. The relevant information (ie. the two conflicting commits) are passed to the publisher.
-
-
-The failure detector is part of the lite client. With the other components (the Bisection), it shares
-  - an address book, and
-  - the state, which contains trusted headers.
-
-  State
-  The light node state contains the following:
-
-  current height (H) - height for the next header we want to verify
-  last header (H-1) - the last header we verified
-  current validators (H) - validators for the height we want to verify (including all validator pubkeys and voting powers)
-  It also includes some configuration, which contains:
-
-  trusting period
-  initial list of full nodes
-  method (sequential or skipping)
-  trust level (if method==skipping)
-
-
-  Whenever in the process of bisection a new header *hd* is trusted
-
-detector and time
-
-- We assume that *hd.bfttime < now - TRUSTED_PERIOD*
-
-**safety liveness**
-
-
-
-## Assumptions/Incentives
+## Assumptions/Incentives/Environment
 
 It is not in the interest of faulty full nodes to talk to the failure detector. This would only increase the likelihood of misbehavior being detected. Also we cannot punish them easily (cheaply). The absence of a response need not be the fault of the full node. Also, a faulty failure detector could wrongly accuse correct full nodes.
 
 Correct full nodes have the incentive to respond, because the failure detector may help them to understand whether their header is a good one. We can thus base liveness arguments of the failure detector on the assumptions that correct full nodes reliably talk to us.
 
 
-- Q2: what is the most suitable way of modeling the system for probabilistic guarantees? Possible options from the literature:
+**Assumptions**
 
-  - Strong adversaries (that have a strategy in picking message delays to play against you, in combination with local coin tosses at the level of the failure detector)
+- **A1** At all times there is at least one correct full node among the primary and the secondary.
 
-  - Randomized schedulers: Roughly, a scheduler randomly decides which process does the next step and which messages are delivered to this process in this step.
+- **A2** Communication between the failure detector and a correct full node is reliable and bounded in time.
 
-  - perhaps just do a synchronous model: in step i the failure detector queries a full node, in step i+1 it does the computation based on the response (including deciding who to query next).
-
-  - We have to understand how the blockchain grows while we do failure detection. How should the failure detector keep up?
-
--Q3: Are we limiting ourselves to the scenario of too many faults to ensure consensus agreement but not complete takeover, that is, 1/3 n <= f <= 2/3 n?
+**Q6: Are we limiting ourselves to the scenario 1/3 n <= f <= 2/3 n**
 
 
-## Definitions
 
+## Problem statement
 
-- The failure detector maintains a set *peers* of identifiers of full nodes. This set is regularly updated by querying a seed node.
+**Safety 1.** If there is no fork at height *h*, and the primary and the secondary are correct, then the failure detector should never output evidence for height *h*.
 
--
+**Liveness 1.** If there is a fork (two correct full nodes decided on different blocks for the same height), and
+- the user of the lite client requests a header of a height *h* that is affected (within the trusting period), and
+- there are two correct full nodes *i* and *j* that are
+    - on different branches, and
+    - primary or secondary,
 
-In case there are two conflicting header for the same height, that is, there is a tuple *t = (_, th, true, _)* in the pool and a newly downloaded header *h* that are different but *th.height = h.height)*, then *t* and *h* shall be added to a set *evidence*.
+then the failure detector eventually outputs evidence for height *h*.
 
-## Specification
+**Liveness 2.** If the bisection trusts a header at height *h* that deviates from the header on the chain (possibly because the primary is faulty), and there is a correct secondary,
+then the failure detector eventually outputs evidence for height *h*.
 
-## Solution
+**Liveness 3.** If the failure detector observes two conflicting headers for height *h*, it reports evidence for height *h*.
+
+**Remark.** Liveness 3 is more operational and talks about operational details of the failure detector. Perhaps it should better be addressed by something like to following requirement:
+
+**Requirement 1.** If the failure detector observes two conflicting headers for height *h*, it should try to verify both. If both are verified it should report evidence.
