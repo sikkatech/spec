@@ -11,13 +11,32 @@
 
 ## Context
 
-ABCI is the interface between the consensus engine and the application. It fundamentally controls the phases in consenus that an application can act during. At the moment, the application can only act at one phase in consensus, immediately after a block has been finalized. This is insufficient for a large class of features and application layer scaling optimziations. We propose introducing three new phases to ABCI to enable these new features.
+ABCI is the interface between the consensus engine and the application.
+It defines when the application can talk to consensus during the execution of a blockchain.
+At the moment, the application can only act at one phase in consensus, immediately after a block has been finalized.
 
-(1) Preprocess Proposal, which the proposer executes before proposing a block.
-(2) Process Proposal, which every validator runs upon receiving a block proposal. This process allows a validator to reject a proposal.
-(3) Vote Extensions, an app-determined data field every validator appends to their final vote in the consensus engine. (These get included in some form within the commit)
+This restriction on the application prohibits numerous features for the application, and scalability improvements that are now better understood than whan ABCI was first written.
+We propose introducing three new phases to ABCI to enable these new features.
 
-We include a short list of features / scaling improvements that are blocked, and which new phases resolve them at the end of this document.
+#### Prepare Proposal phase
+
+This phase aims to allow the block proposer to perform more computation, to reduce load on all other full nodes, lite clients in the network.
+It is intended to enable features such as batch optimizations on the transaction data (e.g. signature aggregation, zk rollup style validity proofs, etc.), enabling stateless blockchains with validator provided authentication paths, etc.
+
+This new phase will only be executed by the block proposer. The application will take in the block header and raw transaction data output by the consensus engine's mempool. It will then return block data that is prepared for gossip on the network, and additional fields to include into the block header.
+
+#### Process Proposal Phase
+
+This phase aims to allow applications to determine validity of a new block proposal, and execute computation on the block data, prior to the blocks finalization.
+It is intended to enable applications to reject block proposals with invalid txs, invalid 'additional security protocols', and to enable alternate pipelined execution models. (Such as Ethereum-style immediate execution)
+
+This phase will be executed by all full nodes upon receiving a block.
+
+#### Vote Extension Phase
+
+This adds an app-determined data field that every validator must include with their vote, and in the header.
+
+We include a more detailed list of features / scaling improvements that are blocked, and which new phases resolve them at the end of this document.
 
 ![Diagram of the current version of ABCI](images/abci.png) | ![Diagram of the new version of ABCI](images/abci++.png)
 On the left is the existing definition of ABCI, and on the right is the proposed ABCI++.
