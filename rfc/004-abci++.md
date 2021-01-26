@@ -16,11 +16,15 @@ It defines when the application can talk to consensus during the execution of a 
 At the moment, the application can only act at one phase in consensus, immediately after a block has been finalized.
 
 This restriction on the application prohibits numerous features for the application, and scalability improvements that are now better understood than whan ABCI was first written.
+For example, many of the scalability proposals can be boiled down to "Make the miner / block proposers / validators do work, so the network does not have to".
+This includes optimizations such as tx-level signature aggregation, state transition proofs, etc.
+Furthermore, many new security properties cannot be achieved in the current paradigm, as the application cannot enforce validators do more than just finalize txs.
+This includes features such as threshold cryptography, and guaranteed IBC connection attempts.
 We propose introducing three new phases to ABCI to enable these new features.
 
 #### Prepare Proposal phase
 
-This phase aims to allow the block proposer to perform more computation, to reduce load on all other full nodes, lite clients in the network.
+This phase aims to allow the block proposer to perform more computation, to reduce load on all other full nodes, and lite clients in the network.
 It is intended to enable features such as batch optimizations on the transaction data (e.g. signature aggregation, zk rollup style validity proofs, etc.), enabling stateless blockchains with validator provided authentication paths, etc.
 
 This new phase will only be executed by the block proposer. The application will take in the block header and raw transaction data output by the consensus engine's mempool. It will then return block data that is prepared for gossip on the network, and additional fields to include into the block header.
@@ -28,13 +32,16 @@ This new phase will only be executed by the block proposer. The application will
 #### Process Proposal Phase
 
 This phase aims to allow applications to determine validity of a new block proposal, and execute computation on the block data, prior to the blocks finalization.
-It is intended to enable applications to reject block proposals with invalid txs, invalid 'additional security protocols', and to enable alternate pipelined execution models. (Such as Ethereum-style immediate execution)
+It is intended to enable applications to reject block proposals with invalid data, and to enable alternate pipelined execution models. (Such as Ethereum-style immediate execution)
 
-This phase will be executed by all full nodes upon receiving a block.
+This phase will be executed by all full nodes upon receiving a block, though on the application side it can do more work in the even that the current node is a validator.
 
 #### Vote Extension Phase
 
-This adds an app-determined data field that every validator must include with their vote, and in the header.
+This phase aims to allow applications to require their validators do more than just validate blocks.
+Example usecases of this include validator determined price oracles, validator guaranteed IBC connection attempts, and validator based threshold crypto.
+
+This adds an app-determined data field that every validator must include with their vote, and these will thus appear in the header.
 
 We include a more detailed list of features / scaling improvements that are blocked, and which new phases resolve them at the end of this document.
 
@@ -43,7 +50,20 @@ On the left is the existing definition of ABCI, and on the right is the proposed
 
 ## Proposal
 
-Below we suggest an API to add these three new phases. We list the ABCI phases in a suggested implementation order and in a suggested implementation order, to ensure auditablity of each phases implementation.
+Below we suggest an API to add these three new phases.
+In this document, sometimes the final round of voting is reffered to as precommit for clarity in how it acts in the Tendermint case.
+
+### Prepare Proposal
+
+*Note, APIs in this section will change after Vote Extensions, we list the adjusted APIs further in the proposal.*
+
+Prepare proposal allows the block proposer to perform application-dependent work in a block, to lower the amount of work the rest of the network must do. batch optimizations to a block, which is a key optimization for scaling. This introduces the following method
+```rust
+fn PreprocessProposal(Block) -> BlockData
+```
+where `BlockData` is a type alias for however data is internally stored within the consensus engine. In Tendermint Core today, this is `Vec<Tx>`.
+
+The application may read the entire block proposal, and mutate the block data field. Mutated transactions will still get removed from the mempool later on, as the mempool rechecks all transactions after a block is executed.
 
 ### Process Proposal
 
@@ -67,7 +87,8 @@ struct ResponseProcessProposal {
 }
 ```
 
-Upon receiving a block header, every validator runs `VerifyHeader(header)`. The reason for why `VerifyHeader` is split from `ProcessProposal` is due to the later sections for Preprocess Proposal and Vote Extensions, where there may be application dependent data in the header that must be verified before accepting the header. If the returned `ResponseVerifyHeader.accept_header` is false, then the validator must precommit nil on this block, and reject all other precommits on this block. `ResponseVerifyHeader.evidence` is appended to the validators local `EvidencePool`.
+Upon receiving a block header, every validator runs `VerifyHeader(header)`. The reason for why `VerifyHeader` is split from `ProcessProposal` is due to the later sections for Preprocess Proposal and Vote Extensions, where there may be application dependent data in the header that must be verified before accepting the header.
+If the returned `ResponseVerifyHeader.accept_header` is false, then the validator must precommit nil on this block, and reject all other precommits on this block. `ResponseVerifyHeader.evidence` is appended to the validators local `EvidencePool`.
 
 Upon receiving an entire block proposal (in the current implementation, all "block parts"), every validator runs `ProcessProposal(block)`. If the returned `ResponseProcessProposal.accept_block` is false, then the validator must precommit nil on this block, and reject all other precommits on this block. `ResponseProcessProposal.evidence` is appended to the validators local `EvidencePool`.
 
@@ -92,21 +113,7 @@ struct ResponseFinalizeBlock {
     tx_results: Vec<ResponseDeliverTx>
 }
 ```
-`ResponseEndBlock` will be renamed to `ConsensusEngineUpdates` and `ResponseDeliverTx` should be renamed to `ResponseTx`.
-
-### Preprocess Proposal
-
-*Note, APIs in this section will change after Vote Extensions, we list the adjusted APIs further in the proposal. We suggest Preprocess Proposal in standalone form first, for implementation order purposes*
-
-Preprocess proposal allows the block proposer to perform application-dependent batch optimizations to a block, which is a key optimization for scaling. This introduces the following method
-```rust
-fn PreprocessProposal(Block) -> BlockData
-```
-where `BlockData` is a type alias for `Vec<Tx>`.
-
-The application may read the entire block proposal, and mutate the block data field. Mutated transactions will still get removed from the mempool later on, as the mempool rechecks all transactions after a block is executed.
-
-It is assumed that the IPC overhead for doing a round trip communication of the block data between the consensus engine and the state machine is negligible compared to p2p gossip time. This has not been experimentally validated yet, if this turns out to not be the case, we can implement this method to do the actual data delivery in chunks. (e.g. deliver the header, evidence first. Then send over block data chunk by chunk)
+`ResponseEndBlock` should then be renamed to `ConsensusEngineUpdates` and `ResponseDeliverTx` should be renamed to `ResponseTx`.
 
 ### Vote Extensions
 
@@ -114,11 +121,12 @@ Vote Extensions allow applications to force their validators to do more than jus
 
 First we discuss the API changes to the vote struct directly
 ```rust
-fn ExtendVote(raw_tm_vote_data: CanonicalVote) -> (UnsignedAppVoteData, SelfAuthenticatingAppData)
+fn ExtendVote(height: u64, round: u64) -> (UnsignedAppVoteData, SelfAuthenticatingAppData)
 fn VerifyVoteExtension(signed_app_vote_data: Vec<u8>, self_authenticating_app_vote_data: Vec<u8>) -> bool
 ```
 
-There are two types of data that the application can enforce validators to include with their vote. There is data that the app needs the validator to sign over in their vote, and there can be self-authenticating vote data. Self-authenticating here means that the application upon seeing these bytes, knows its valid, came from the validator and is non-malleable.
+There are two types of data that the application can enforce validators to include with their vote.
+There is data that the app needs the validator to sign over in their vote, and there can be self-authenticating vote data. Self-authenticating here means that the application upon seeing these bytes, knows its valid, came from the validator and is non-malleable.
 
 The `CanonicalVote` struct will acommodate the `UnsignedAppVoteData` field by adding another string to its encoding, after the `chain-id`. This should not interfere with existing hardware signing integrations, as it does not affect the constant offset for the `height` and `round`, and the vote size does not have an explicit upper bound. (So adding this unsigned app vote data field is equivalent from the HSM's perspective as having a superlong chain-ID)
 
@@ -127,6 +135,22 @@ RFC: Please comment if you think it will be fine to have elongate the message th
 The flow of these methods is that when a validator has to precommit, Tendermint will first produce a precommit canonical vote without the application vote data. It will then pass it to the application, which will return unsigned application vote data, and self authenticating application vote data. It will bundle the `unsigned_application_vote_data` into the canonical vote, and pass it to the HSM to sign. Finally it will package the self-authenticating app vote data, and the `signed_vote_data` together, into one final Vote struct to be passed around the network.
 
 <WIP Finish talking about the vote flow, give structs for Vote, Commit, Header, with and w-o batch optimizations. Decide API for preprocess proposal dealing with the Commit>
+
+
+#### IPC communication affects
+
+For brevity in exposition above, we did not discuss the trade-offs that may occur in interprocess communication delays that these changs will introduce.
+These new ABCI methods add more locations where the application must communicate with the consensus engine.
+In most configurations, we expect that the consensus engine and the application will be either statically or dynamically linked, so all communication is a matter of at most adjusting the memory model the data is layed out within.
+This memory model conversion is typically considered negligible, as delay here is measured on the order of microseconds at most, whereas we face milisecond delays due to cryptography and network overheads.
+Thus we ignore the overhead in the case of linked libraries.
+
+In the case where the consensus engine and the application are ran out of process, delays can easily become on the order of miliseconds, thus its important to consider whats happening here.
+We go through this phase by phase.
+
+##### Prepare proposal IPC overhead
+
+This requires a round of block communication 
 
 ## Status
 
@@ -139,6 +163,9 @@ Proposed
 ### Negative
 
 ### Neutral
+
+#### IPC Communication affects
+For brevity in exposition within the ADR
 
 ## References
 
