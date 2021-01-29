@@ -59,9 +59,9 @@ In this document, sometimes the final round of voting is reffered to as precommi
 
 Prepare proposal allows the block proposer to perform application-dependent work in a block, to lower the amount of work the rest of the network must do. batch optimizations to a block, which is a key optimization for scaling. This introduces the following method
 ```rust
-fn PreprocessProposal(Block) -> BlockData
+fn PrepareProposal(Block) -> BlockData
 ```
-where `BlockData` is a type alias for however data is internally stored within the consensus engine. In Tendermint Core today, this is `Vec<Tx>`.
+where `BlockData` is a type alias for however data is internally stored within the consensus engine. In Tendermint Core today, this is `[]Tx`.
 
 The application may read the entire block proposal, and mutate the block data field. Mutated transactions will still get removed from the mempool later on, as the mempool rechecks all transactions after a block is executed.
 
@@ -71,9 +71,9 @@ Process proposal sends the block data to the state machine, prior to running the
 
 We introduce three new methods,
 ```rust
-fn VerifyHeader(header: Header) -> ResponseVerifyHeader
-fn ProcessProposal(block: Block) -> ResponseProcessProposal
-fn RevertProposal(height: usize, round: usize)
+fn VerifyHeader(header: Header, isValidator: bool) -> ResponseVerifyHeader {...}
+fn ProcessProposal(block: Block) -> ResponseProcessProposal {...}
+fn RevertProposal(height: usize, round: usize) {...}
 ```
 where
 ```rust
@@ -87,7 +87,7 @@ struct ResponseProcessProposal {
 }
 ```
 
-Upon receiving a block header, every validator runs `VerifyHeader(header)`. The reason for why `VerifyHeader` is split from `ProcessProposal` is due to the later sections for Preprocess Proposal and Vote Extensions, where there may be application dependent data in the header that must be verified before accepting the header.
+Upon receiving a block header, every validator runs `VerifyHeader(header, isValidator)`. The reason for why `VerifyHeader` is split from `ProcessProposal` is due to the later sections for Preprocess Proposal and Vote Extensions, where there may be application dependent data in the header that must be verified before accepting the header.
 If the returned `ResponseVerifyHeader.accept_header` is false, then the validator must precommit nil on this block, and reject all other precommits on this block. `ResponseVerifyHeader.evidence` is appended to the validators local `EvidencePool`.
 
 Upon receiving an entire block proposal (in the current implementation, all "block parts"), every validator runs `ProcessProposal(block)`. If the returned `ResponseProcessProposal.accept_block` is false, then the validator must precommit nil on this block, and reject all other precommits on this block. `ResponseProcessProposal.evidence` is appended to the validators local `EvidencePool`.
@@ -96,13 +96,13 @@ Once a validator knows that consensus has failed to be achieved for a given bloc
 
 The application is expected to cache the block data for later execution.
 
-This approach changes the amount of time available for the consensus engine to deliver a block's data to the state machine. Before, the block data for block N would be delivered to the state machine upon receiving a commit for block N and then be executed. The state machine would respond after executing the txs and before prevoting. The time for block delivery from the consensus engine to the state machine after this change is the time of receiving block proposal N to the to time precommit on proposal N. It is expected that this difference is unimportant in practice, as this time includes one round of p2p communication for prevoting, which is expected to be significantly less than the time for the cosnensus engine to deliver a block to the state machine.
+The `isValidator` flag is set according to whether the current node is a validator of a full node.
 
 ### DeliverTx rename to FinalizeBlock
 
 After implementing `ProcessProposal`, txs no longer need to be delivered during the block execution phase. Instead, they are already in the state machine. Thus `BeginBlock, DeliverTx, EndBlock` can all be replaced with a single ABCI method for `ExecuteBlock`. Internally the application may still structure its method for executing the block as `BeginBlock, DeliverTx, EndBlock`. However, it is overly restrictive to enforce that the block be executed after it is finalized. There are multiple other, very reasonable pipelined execution models one can go for. So instead we suggest calling this succession of methods `FinalizeBlock`. We propose the following API
 
-Replace `BeginBlock, DeliverTx, EndBlock` with the following method
+Replace the `BeginBlock, DeliverTx, EndBlock` ABCI methods with the following method
 ```rust
 fn FinalizeBlock() -> ResponseFinalizeBlock
 ```
@@ -118,6 +118,7 @@ struct ResponseFinalizeBlock {
 ### Vote Extensions
 
 Vote Extensions allow applications to force their validators to do more than just validate within consensus. This is done by allowing the application to add more data to their votes, in the final round of voting. (Namely the precommit)
+This additional application data will then appear in the block header.
 
 First we discuss the API changes to the vote struct directly
 ```rust
@@ -134,8 +135,17 @@ RFC: Please comment if you think it will be fine to have elongate the message th
 
 The flow of these methods is that when a validator has to precommit, Tendermint will first produce a precommit canonical vote without the application vote data. It will then pass it to the application, which will return unsigned application vote data, and self authenticating application vote data. It will bundle the `unsigned_application_vote_data` into the canonical vote, and pass it to the HSM to sign. Finally it will package the self-authenticating app vote data, and the `signed_vote_data` together, into one final Vote struct to be passed around the network.
 
-<WIP Finish talking about the vote flow, give structs for Vote, Commit, Header, with and w-o batch optimizations. Decide API for preprocess proposal dealing with the Commit>
+#### Changes to Prepare Proposal Phase
 
+There are many use cases where the additional data from vote extensions can be batch optimized.
+This is mainly of interest when the votes include self-authenticating app vote data that be batched together, or the unsigned app vote data is the same across all votes.
+To allow for this, we change the PrepareProposal API to the following
+
+```rust
+fn PrepareProposal(Block, UnbatchedHeader) -> (BlockData, Header)
+```
+
+where `UnbatchedHeader` essentially contains a "RawCommit", the `Header` contains a batch-optimized `commit` and an additional "Application Data" field in its root. This will involve a number of changes to core data structures, which will be gone over in the ADR.
 
 #### IPC communication affects
 
@@ -145,13 +155,27 @@ In most configurations, we expect that the consensus engine and the application 
 This memory model conversion is typically considered negligible, as delay here is measured on the order of microseconds at most, whereas we face milisecond delays due to cryptography and network overheads.
 Thus we ignore the overhead in the case of linked libraries.
 
-In the case where the consensus engine and the application are ran out of process, delays can easily become on the order of miliseconds, thus its important to consider whats happening here.
+In the case where the consensus engine and the application are ran out of process, delays can easily become on the order of miliseconds based upon the data sent, thus its important to consider whats happening here.
 We go through this phase by phase.
 
 ##### Prepare proposal IPC overhead
 
-This requires a round of block communication 
+This requires a round of IPC communication, where both directions are quite large. Namely the proposer communicating an entire block to the application. 
+However, this can be mitigated by splitting up `PrepareProposal` into two distinct, async methods, one for the block IPC communication, and one for the Header IPC communication.
 
+Then for chains where the block data does not depend on the header data, the block data IPC communication can proceed in parallel to the prior block's voting phase. (As a node can know whether or not its the leader in the next round)
+
+Furthermore, this IPC communication is expected to be quite low relative to the amount of p2p gossip time it takes to send the block data around the network, so this is perhaps a premature concern until more sophisticated block gossip protocols are implemented.
+##### Process Proposal IPC overhead
+
+This phase changes the amount of time available for the consensus engine to deliver a block's data to the state machine.
+Before, the block data for block N would be delivered to the state machine upon receiving a commit for block N and then be executed.
+The state machine would respond after executing the txs and before prevoting.
+The time for block delivery from the consensus engine to the state machine after this change is the time of receiving block proposal N to the to time precommit on proposal N. It is expected that this difference is unimportant in practice, as this time is in parallel to one round of p2p communication for prevoting, which is expected to be significantly less than the time for the consensus engine to deliver a block to the state machine.
+
+##### Vote Extension IPC overhead
+
+This has a small amount of data, but does incur an IPC round trip delay. This IPC round trip delay is not expected to be large. 
 ## Status
 
 Proposed
@@ -163,9 +187,6 @@ Proposed
 ### Negative
 
 ### Neutral
-
-#### IPC Communication affects
-For brevity in exposition within the ADR
 
 ## References
 
