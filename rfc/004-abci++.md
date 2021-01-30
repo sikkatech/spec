@@ -94,9 +94,11 @@ Upon receiving an entire block proposal (in the current implementation, all "blo
 
 Once a validator knows that consensus has failed to be achieved for a given block, it must run `RevertProposal(block.height, block.round)`, in order to signal to the application to revert any potentially mutative state changes it may have made. In Tendermint, this occurs when incrementing rounds.
 
+RFC: How do we handle the scenario where honest node A finalized on round x, and honest node B finalized on round x + 1? (e.g. when 2f precommits are publicly known, and a validator precommits themself but doesn't broadcast, but they increment rounds) Is this a real concern? The state root derived could change if everyone finalizes on round x+1, not round x, as the state machine can depend non-uniformly on timestamp.
+
 The application is expected to cache the block data for later execution.
 
-The `isValidator` flag is set according to whether the current node is a validator of a full node.
+The `isValidator` flag is set according to whether the current node is a validator of a full node. This is intended to allow for beginning validator dependent computation that will be included later in vote extensions. (An example of this is threshold decryptions of ciphertexts)
 
 ### DeliverTx rename to FinalizeBlock
 
@@ -146,6 +148,7 @@ fn PrepareProposal(Block, UnbatchedHeader) -> (BlockData, Header)
 ```
 
 where `UnbatchedHeader` essentially contains a "RawCommit", the `Header` contains a batch-optimized `commit` and an additional "Application Data" field in its root. This will involve a number of changes to core data structures, which will be gone over in the ADR.
+The `Unbatched` header and `rawcommit` will never be broadcasted, they will be completely internal to consensus.
 
 #### IPC communication affects
 
@@ -166,16 +169,19 @@ However, this can be mitigated by splitting up `PrepareProposal` into two distin
 Then for chains where the block data does not depend on the header data, the block data IPC communication can proceed in parallel to the prior block's voting phase. (As a node can know whether or not its the leader in the next round)
 
 Furthermore, this IPC communication is expected to be quite low relative to the amount of p2p gossip time it takes to send the block data around the network, so this is perhaps a premature concern until more sophisticated block gossip protocols are implemented.
+
 ##### Process Proposal IPC overhead
 
 This phase changes the amount of time available for the consensus engine to deliver a block's data to the state machine.
 Before, the block data for block N would be delivered to the state machine upon receiving a commit for block N and then be executed.
 The state machine would respond after executing the txs and before prevoting.
-The time for block delivery from the consensus engine to the state machine after this change is the time of receiving block proposal N to the to time precommit on proposal N. It is expected that this difference is unimportant in practice, as this time is in parallel to one round of p2p communication for prevoting, which is expected to be significantly less than the time for the consensus engine to deliver a block to the state machine.
+The time for block delivery from the consensus engine to the state machine after this change is the time of receiving block proposal N to the to time precommit on proposal N.
+It is expected that this difference is unimportant in practice, as this time is in parallel to one round of p2p communication for prevoting, which is expected to be significantly less than the time for the consensus engine to deliver a block to the state machine.
 
 ##### Vote Extension IPC overhead
 
-This has a small amount of data, but does incur an IPC round trip delay. This IPC round trip delay is not expected to be large. 
+This has a small amount of data, but does incur an IPC round trip delay. This IPC round trip delay is pretty negligible as compared the variance in vote gossip time. (the IPC delay is typically on the order of 10 microseconds)
+
 ## Status
 
 Proposed
@@ -184,10 +190,29 @@ Proposed
 
 ### Positive
 
+* Enables a large number of new features for applications
+
 ### Negative
+
+* This is a breaking change to all existing ABCI clients, however this should be a thin
+* Vote Extensions adds more complexity to core Tendermint Data Structures
 
 ### Neutral
 
+* IPC overhead considerations change, but mostly for the better
+
 ## References
 
+Reference for IPC delay constants: http://pages.cs.wisc.edu/~adityav/Evaluation_of_Inter_Process_Communication_Mechanisms.pdf
+
 ### Short list of blocked features & scaling improvements
+
+* Tx based signature aggregation - PrepareProposal
+* SNARK proof of valid state transition - PrepareProposal
+* Validator provided authentication paths in stateless blockchains - PrepareProposal
+* Immediate Execution - ProcessProposal
+* Simple soft forks - ProcessProposal
+* Validator guaranteed IBC connection attempts - Vote Extensions
+* Validator based price oracles - Vote Extensions
+* Immediate Execution with increased time for block execution - PrepareProposal, ProcessProposal, Vote Extensions
+* Threshold Encrypted txs - PrepareProposal, ProcessProposal, Vote Extensions
