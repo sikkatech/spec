@@ -45,7 +45,7 @@ This adds an app-determined data field that every validator must include with th
 
 We include a more detailed list of features / scaling improvements that are blocked, and which new phases resolve them at the end of this document.
 
-![Diagram of the current version of ABCI](images/abci.png) | ![Diagram of the new version of ABCI](images/abci++.png)
+![Diagram of the current version of ABCI](images/abci.png =250x) | ![Diagram of the new version of ABCI](images/abci++.png =250x)
 On the left is the existing definition of ABCI, and on the right is the proposed ABCI++.
 
 ## Proposal
