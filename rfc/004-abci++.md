@@ -15,7 +15,7 @@ ABCI is the interface between the consensus engine and the application.
 It defines when the application can talk to consensus during the execution of a blockchain.
 At the moment, the application can only act at one phase in consensus, immediately after a block has been finalized.
 
-This restriction on the application prohibits numerous features for the application, and scalability improvements that are now better understood than whan ABCI was first written.
+This restriction on the application prohibits numerous features for the application, including many scalability improvements that are now better understood than whan ABCI was first written.
 For example, many of the scalability proposals can be boiled down to "Make the miner / block proposers / validators do work, so the network does not have to".
 This includes optimizations such as tx-level signature aggregation, state transition proofs, etc.
 Furthermore, many new security properties cannot be achieved in the current paradigm, as the application cannot enforce validators do more than just finalize txs.
@@ -46,12 +46,12 @@ This adds an app-determined data field that every validator must include with th
 We include a more detailed list of features / scaling improvements that are blocked, and which new phases resolve them at the end of this document.
 
  <image src="images/abci.png" style="float: left; width: 40%;" /> <image src="images/abci++.png" style="float: right; width: 40%;" />
-On the left is the existing definition of ABCI, and on the right is the proposed ABCI++.
+On the top is the existing definition of ABCI, and on the bottom is the proposed ABCI++.
 
 ## Proposal
 
 Below we suggest an API to add these three new phases.
-In this document, sometimes the final round of voting is reffered to as precommit for clarity in how it acts in the Tendermint case.
+In this document, sometimes the final round of voting is referred to as precommit for clarity in how it acts in the Tendermint case.
 
 ### Prepare Proposal
 
@@ -205,14 +205,16 @@ Proposed
 
 Reference for IPC delay constants: http://pages.cs.wisc.edu/~adityav/Evaluation_of_Inter_Process_Communication_Mechanisms.pdf
 
-### Short list of blocked features & scaling improvements
+### Short list of blocked features / scaling improvements with required ABCI++ Phases
 
-* Tx based signature aggregation - PrepareProposal
-* SNARK proof of valid state transition - PrepareProposal
-* Validator provided authentication paths in stateless blockchains - PrepareProposal
-* Immediate Execution - ProcessProposal
-* Simple soft forks - ProcessProposal
-* Validator guaranteed IBC connection attempts - Vote Extensions
-* Validator based price oracles - Vote Extensions
-* Immediate Execution with increased time for block execution - PrepareProposal, ProcessProposal, Vote Extensions
-* Threshold Encrypted txs - PrepareProposal, ProcessProposal, Vote Extensions
+| Feature | PrepareProposal | ProcessProposal | Vote Extensions |
+| :---         |     :---:      |     :---:     |     :---:     |
+| Tx based signature aggregation   | X |   |   |
+| SNARK proof of valid state transition     | X |   |   |
+| Validator provided authentication paths in stateless blockchains | X |   |   |
+| Immediate Execution     |   | X |   |
+| Simple soft forks     |   | X |   |
+| Validator guaranteed IBC connection attempts     |   |   | X |
+| Validator based price oracles     |   |   | X |
+| Immediate Execution with increased time for block execution     | X | X | X |
+| Threshold Encrypted txs     | X | X | X |
